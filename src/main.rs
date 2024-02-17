@@ -1,7 +1,9 @@
 use std::{
     env,
-    io::{Read, Write},
+    io::{Read, Write, Error}, ptr,
 };
+
+use libc::pthread_jit_write_protect_np;
 
 #[derive(Debug)]
 enum Op {
@@ -77,6 +79,8 @@ fn main() -> Result<(), &'static str> {
     let mut interpreter = Interpreter::new(operations, std::io::stdin(), std::io::stdout());
     interpreter.run();
 
+    execute_bin();
+
     Ok(())
 }
 
@@ -147,5 +151,53 @@ where
 
             ip += 1;
         }
+    }
+}
+
+fn execute_bin() {
+    let size = 12;
+
+    unsafe { pthread_jit_write_protect_np(0); }
+
+    let mem = unsafe {
+        libc::mmap(
+            ptr::null_mut(),
+            size,
+            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+            libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_JIT,
+            -1,
+            0,
+            )
+    };
+
+    if mem == libc::MAP_FAILED {
+        let err = Error::last_os_error();
+        println!("Error code: {:?}", err.raw_os_error());
+        panic!("Failed to allocate executable memory");
+    }
+
+    let code: [u8; 12] = [
+        0x01, 0x00, 0x00, 0x50, // MOV X0, #80 (80 is just an example value)
+        0xC0, 0x03, 0x5F, 0xD6, // RET
+        0x00, 0x00, 0x00, 0x00, // Placeholder for the return value
+    ];
+
+
+    unsafe {
+        ptr::copy_nonoverlapping(code.as_ptr(), mem as *mut u8, code.len());
+
+        pthread_jit_write_protect_np(1);
+    }
+
+    // Transmute the aligned memory address to a function pointer with the correct signature
+    let func: extern "C" fn() -> i32 = unsafe { std::mem::transmute(mem) };
+
+    // Execute the function
+    let result: i32 = func();
+
+    println!("Result of executed code: {}", result);
+
+    unsafe {
+        libc::munmap(mem, size);
     }
 }
