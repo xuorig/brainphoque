@@ -1,6 +1,7 @@
 use std::{
     env,
-    io::{Read, Write, Error}, ptr,
+    io::{Error, Read, Write},
+    ptr,
 };
 
 use libc::pthread_jit_write_protect_np;
@@ -76,10 +77,17 @@ fn main() -> Result<(), &'static str> {
         }
     }
 
-    let mut interpreter = Interpreter::new(operations, std::io::stdin(), std::io::stdout());
-    interpreter.run();
+    // let mut interpreter = Interpreter::new(operations, std::io::stdin(), std::io::stdout());
+    // interpreter.run();
 
-    execute_bin();
+    let mut jit_compiler = JitCompiler::new(operations);
+    let jit_memory = [0; 1024];
+    println!("mem addr {:p}",&jit_memory);
+
+    let func = jit_compiler.compile();
+    let result = func(jit_memory.as_ptr());
+
+    println!("RESULT: {:#08x}", result);
 
     Ok(())
 }
@@ -134,19 +142,19 @@ where
                     let mut read = [0; 1];
                     self.reader.read(&mut read).unwrap();
                     self.cells[dp] = read[0];
-                },
+                }
                 Op::JumpIfZero(addr) => {
                     if self.cells[dp] == 0 {
                         ip = addr;
                         continue;
                     }
-                },
+                }
                 Op::JumpIfNonZero(addr) => {
                     if self.cells[dp] != 0 {
                         ip = addr;
                         continue;
                     }
-                },
+                }
             }
 
             ip += 1;
@@ -154,50 +162,87 @@ where
     }
 }
 
-fn execute_bin() {
-    let size = 12;
+struct JitCompiler {
+    ops: Vec<Op>,
+}
 
-    unsafe { pthread_jit_write_protect_np(0); }
+impl JitCompiler {
+    fn new(ops: Vec<Op>) -> Self {
+        Self {
+            ops,
+        }
+    }
 
-    let mem = unsafe {
-        libc::mmap(
-            ptr::null_mut(),
-            size,
-            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-            libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_JIT,
-            -1,
-            0,
+    fn compile(&mut self) -> extern "C" fn(memory: *const u8) -> i64 {
+        let mut code = vec![];
+
+        let mut ip = 0;
+        let mut dp = 0;
+
+        while ip < self.ops.len() {
+            match self.ops[ip] {
+                Op::Inc => {
+                    code.push(0x00);
+                }
+                Op::Dec => {
+                }
+                Op::Left => {
+                    if dp > 0 {
+                        dp -= 1;
+                    } else {
+                        panic!("Tried to move left when dp was 0");
+                    }
+                }
+                Op::Right => {
+                    dp += 1;
+                }
+                Op::Output => {
+                }
+                Op::Input => {
+                }
+                Op::JumpIfZero(addr) => {
+                }
+                Op::JumpIfNonZero(addr) => {
+                }
+            }
+
+            ip += 1;
+        }
+
+        let size = 1024;
+
+        unsafe {
+            pthread_jit_write_protect_np(0);
+        }
+
+        let mem = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_JIT,
+                -1,
+                0,
             )
-    };
+        };
 
-    if mem == libc::MAP_FAILED {
-        let err = Error::last_os_error();
-        println!("Error code: {:?}", err.raw_os_error());
-        panic!("Failed to allocate executable memory");
-    }
+        if mem == libc::MAP_FAILED {
+            let err = Error::last_os_error();
+            println!("Error code: {:?}", err.raw_os_error());
+            panic!("Failed to allocate executable memory");
+        }
 
-    let code: [u8; 12] = [
-        0x01, 0x00, 0x00, 0x50, // MOV X0, #80 (80 is just an example value)
-        0xC0, 0x03, 0x5F, 0xD6, // RET
-        0x00, 0x00, 0x00, 0x00, // Placeholder for the return value
-    ];
+        let code: Vec<u8> = vec![
+            0xC0, 0x03, 0x5F, 0xD6, // RET
+        ];
 
+        unsafe {
+            ptr::copy_nonoverlapping(code.as_ptr(), mem as *mut u8, code.len());
+            pthread_jit_write_protect_np(1);
+        }
 
-    unsafe {
-        ptr::copy_nonoverlapping(code.as_ptr(), mem as *mut u8, code.len());
+        let func: extern "C" fn(memory: *const u8) -> i64 = unsafe { std::mem::transmute(mem) };
 
-        pthread_jit_write_protect_np(1);
-    }
-
-    // Transmute the aligned memory address to a function pointer with the correct signature
-    let func: extern "C" fn() -> i32 = unsafe { std::mem::transmute(mem) };
-
-    // Execute the function
-    let result: i32 = func();
-
-    println!("Result of executed code: {}", result);
-
-    unsafe {
-        libc::munmap(mem, size);
+        func
     }
 }
