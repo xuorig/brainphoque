@@ -81,13 +81,10 @@ fn main() -> Result<(), &'static str> {
     // interpreter.run();
 
     let mut jit_compiler = JitCompiler::new(operations);
-    let jit_memory = [0; 1024];
-    println!("mem addr {:p}",&jit_memory);
-
+    let jit_memory = [98; 1024];
+    let mmr_addr = jit_memory.as_ptr();
     let func = jit_compiler.compile();
-    let result = func(jit_memory.as_ptr());
-
-    println!("RESULT: {:#08x}", result);
+    func(mmr_addr);
 
     Ok(())
 }
@@ -168,48 +165,55 @@ struct JitCompiler {
 
 impl JitCompiler {
     fn new(ops: Vec<Op>) -> Self {
-        Self {
-            ops,
-        }
+        Self { ops }
     }
 
-    fn compile(&mut self) -> extern "C" fn(memory: *const u8) -> i64 {
-        let mut code = vec![];
+    fn compile(&mut self) -> extern "C" fn(memory: *const u8) {
+        let mut code: Vec<u8> = vec![];
 
-        let mut ip = 0;
-        let mut dp = 0;
-
-        while ip < self.ops.len() {
-            match self.ops[ip] {
+        for op in &self.ops {
+            match op {
                 Op::Inc => {
-                    code.push(0x00);
+                    // LDRB W1, [X0]    ; Load the byte at the memory address pointed to by X0 into W1
+                    // ADD W1, W1, #1   ; Add 1 to the value in W1
+                    // STRB W1, [X0]    ; Store the modified byte back to the memory address in X0
+                    //code.extend_from_slice(&[
+                    //    0x01, 0x00, 0x40, 0x39, 0x21, 0x04, 0x00, 0x11, 0x01, 0x00, 0x00, 0x39,
+                    //]);
                 }
                 Op::Dec => {
+                    // LDRB W1, [X0]    ; Load the byte at the memory address pointed to by X0 into W1
+                    // SUB W1, W1, #1   ; Add 1 to the value in W1
+                    // STRB W1, [X0]    ; Store the modified byte back to the memory address in X0
+                    code.extend_from_slice(&[
+                        0x01, 0x00, 0x40, 0x39, 0x21, 0x04, 0x00, 0x51, 0x01, 0x00, 0x00, 0x39,
+                    ]);
                 }
                 Op::Left => {
-                    if dp > 0 {
-                        dp -= 1;
-                    } else {
-                        panic!("Tried to move left when dp was 0");
-                    }
+                    // SUB X0, X0, #1
+                    code.extend_from_slice(&[0x00, 0x04, 0x00, 0xD1]);
                 }
                 Op::Right => {
-                    dp += 1;
+                    // ADD X0, X0, #1
+                    code.extend_from_slice(&[0x00, 0x04, 0x00, 0x91]);
                 }
                 Op::Output => {
+                    code.extend_from_slice(&[
+                                           0xE3,0x03,0x00,0xAA,
+                                           0x20,0x00,0x80,0xD2,
+                                           0xE1,0x03,0x03,0xAA,
+                                           0x22,0x00,0x80,0xD2,
+                                           0x90,0x00,0x80,0xD2,
+                                           0x01,0x00,0x00,0xD4,
+                    ]);
                 }
-                Op::Input => {
-                }
-                Op::JumpIfZero(addr) => {
-                }
-                Op::JumpIfNonZero(addr) => {
-                }
+                Op::Input => {}
+                Op::JumpIfZero(addr) => {}
+                Op::JumpIfNonZero(addr) => {}
             }
-
-            ip += 1;
         }
 
-        let size = 1024;
+        code.extend_from_slice(&[0xC0, 0x03, 0x5F, 0xD6]);
 
         unsafe {
             pthread_jit_write_protect_np(0);
@@ -218,7 +222,7 @@ impl JitCompiler {
         let mem = unsafe {
             libc::mmap(
                 ptr::null_mut(),
-                size,
+                code.len(),
                 libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
                 libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_JIT,
                 -1,
@@ -232,16 +236,12 @@ impl JitCompiler {
             panic!("Failed to allocate executable memory");
         }
 
-        let code: Vec<u8> = vec![
-            0xC0, 0x03, 0x5F, 0xD6, // RET
-        ];
-
         unsafe {
             ptr::copy_nonoverlapping(code.as_ptr(), mem as *mut u8, code.len());
             pthread_jit_write_protect_np(1);
         }
 
-        let func: extern "C" fn(memory: *const u8) -> i64 = unsafe { std::mem::transmute(mem) };
+        let func: extern "C" fn(memory: *const u8) = unsafe { std::mem::transmute(mem) };
 
         func
     }
