@@ -81,7 +81,7 @@ fn main() -> Result<(), &'static str> {
     // interpreter.run();
 
     let mut jit_compiler = JitCompiler::new(operations);
-    let jit_memory = [98; 1024];
+    let jit_memory = [65; 1024];
     let mmr_addr = jit_memory.as_ptr();
     let func = jit_compiler.compile();
     func(mmr_addr);
@@ -177,9 +177,9 @@ impl JitCompiler {
                     // LDRB W1, [X0]    ; Load the byte at the memory address pointed to by X0 into W1
                     // ADD W1, W1, #1   ; Add 1 to the value in W1
                     // STRB W1, [X0]    ; Store the modified byte back to the memory address in X0
-                    //code.extend_from_slice(&[
-                    //    0x01, 0x00, 0x40, 0x39, 0x21, 0x04, 0x00, 0x11, 0x01, 0x00, 0x00, 0x39,
-                    //]);
+                    code.extend_from_slice(&[
+                        0x01, 0x00, 0x40, 0x39, 0x21, 0x04, 0x00, 0x11, 0x01, 0x00, 0x00, 0x39,
+                    ]);
                 }
                 Op::Dec => {
                     // LDRB W1, [X0]    ; Load the byte at the memory address pointed to by X0 into W1
@@ -199,12 +199,13 @@ impl JitCompiler {
                 }
                 Op::Output => {
                     code.extend_from_slice(&[
-                                           0xE3,0x03,0x00,0xAA,
-                                           0x20,0x00,0x80,0xD2,
-                                           0xE1,0x03,0x03,0xAA,
-                                           0x22,0x00,0x80,0xD2,
-                                           0x90,0x00,0x80,0xD2,
-                                           0x01,0x00,0x00,0xD4,
+                        0xE3, 0x03, 0x00, 0xAA, // mov x3, x0 (Save x0, our data pointer)
+                        0x20, 0x00, 0x80, 0xD2, // movz x0, #0x01 (STD OUT)
+                        0xE1, 0x03, 0x03, 0xAA, // mov x1, x3 (Data pointer)
+                        0x22, 0x00, 0x80, 0xD2, // movz x2, #0x1 (Always 1 byte output)
+                        0x90, 0x00, 0x80, 0xD2, // movz x16, #0x04 (write syscall)
+                        0x01, 0x00, 0x00, 0xD4, // svc #0
+                        0xE0, 0x03, 0x03, 0xAA, // mov x0 x3 (Restore data pointer)
                     ]);
                 }
                 Op::Input => {}
